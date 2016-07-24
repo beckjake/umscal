@@ -335,6 +335,33 @@ class GoogleCalendarWriter(Writer):
         created = self.calsvc.insert(body={'summary': name}).execute()
         return created['id']
 
+    def _make_batch_request(self, all_requests: list):
+        batch = self.service.new_batch_http_request()
+        for req in all_requests:
+            batch.add(req)
+        batch.execute()
+
+    def _clear_calendar(self, cal_id: str):
+        events = self.esvc.list(calendarId=cal_id).execute()['items']
+        all_deletes = []
+        for event in events:
+            all_deletes.append(self.esvc.delete(calendarId=cal_id, eventId=event['id']))
+            if len(all_deletes) == 1000:
+                self._make_batch_request(all_deletes)
+                all_deletes = []
+        if all_deletes:
+            self._make_batch_request(all_deletes)
+
+    def _add_events(self, cal_id: str, events: Iterable[Event]):
+        all_adds = []
+        for event in events:
+            all_adds.append(self.esvc.insert(calendarId=cal_id, body=self.to_gcal(event)))
+            if len(all_adds) == 1000:
+                self._make_batch_request(all_adds)
+                all_adds = []
+        if all_adds:
+            self._make_batch_request(all_adds)
+
     def _get_empty_calendar_named(self, name: str) -> Optional[str]:
         try:
             to_clear = self.calendar_list_cache[name]
@@ -346,11 +373,8 @@ class GoogleCalendarWriter(Writer):
             if not wait_for_response(question.format(to_clear['summary'])):
                 return None
 
-        events = self.esvc.list(calendarId=to_clear['id']).execute()['items']
-        for event in events:
-            self.esvc.delete(calendarId=to_clear['id'], eventId=event['id']).execute()
+        self._clear_calendar(cal_id=to_clear['id'])
         return to_clear['id']
-
 
     def _add_calendar(self, calendar: Calendar):
         """Add a calendar entry."""
@@ -358,8 +382,7 @@ class GoogleCalendarWriter(Writer):
         if cal_id is None:
             return
         print('Importing {} events into calendar {}'.format(len(calendar), calendar.name))
-        for event in calendar:
-            self.esvc.insert(calendarId=cal_id, body=self.to_gcal(event)).execute()
+        self._add_events(cal_id=cal_id, events=calendar)
 
     def write(self, calendars: Iterable[Calendar], *, flatten=False):
         self._calendar_list_cache = None
